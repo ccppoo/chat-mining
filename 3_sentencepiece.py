@@ -40,7 +40,7 @@ def moveFileTo(this : os.PathLike, to : os.PathLike):
     if not os.path.exists(this):
         raise FileNotFoundError(this)
     os.rename(this, to)
-    logger.info(f"Moved model and vocab file to {FILE_PATH(DATA_FOLDER_NAME, streamer, model)}")
+    logger.info(f"Moved model and vocab file to {to}")
 
 '''
 input : 학습시킬 파일
