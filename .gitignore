@@ -1,3 +1,8 @@
+# chat data
+data/*
+data2/*
+preprocessed/*
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
