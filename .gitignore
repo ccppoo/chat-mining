@@ -3,6 +3,9 @@ data/*
 data2/*
 preprocessed/*
 
+# API key / ID
+secret.py
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
