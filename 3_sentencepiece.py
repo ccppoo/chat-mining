@@ -112,7 +112,7 @@ if __name__ == '__main__':
 
     if First:
         models = ['unigram','bpe','char','word']
-        vocabSizes = [1000, 2000, 4000]
+        vocabSizes = [2000, 4000, 8000, 16000]
         sts = [x for x in getStreamers()]
 
         jobs_todo = len(models) * len(vocabSizes)
@@ -132,7 +132,7 @@ if __name__ == '__main__':
         # 나는 분명히 프로세서 16개 중 75%인 12개만 줬는데 한 순간에 28개의 프로세스가 돌아감
         # 뭐지?
         # pool = Pool(int(cpu_count() * 0.75))
-        pool = Pool(4)
+        pool = Pool(2)
         pool.starmap(trainSentencePiece, product(sts, models, vocabSizes))
 
         # cnt = 0
