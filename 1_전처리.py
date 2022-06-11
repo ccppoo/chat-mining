@@ -15,7 +15,7 @@
 
     최초의 데이터는 CSV 포멧으로 되어 있지만, 채팅 내부에 쉼표(',')가 있어 pandas dataframe을 사용하지 못하는 상태이므로
     아하 작성한 "stringify_comma" 함수를 이용해 원본 채팅은 그대로 살리기 위해 큰 따옴표로 둘러싸고
-    원본 데이터가 있는 폴더 'data'가 아닌 'data2'에 csv 파일을 저장했다.
+    원본 데이터가 있는 폴더 'data'가 아닌 'preprocessed/csv' 폴더에 csv 파일을 저장했다.
 
 (2) is_system_chat
 
@@ -71,46 +71,27 @@
 
 * -- * -- * -- * -- * -- * -- * -- * -- * -- * -- * -- * -- * -- * -- * -- * -- * -- * -- * -- * -- * -- * --
 | 원본 데이터                                         : ./data/<streamer id>/<stream id>.csv
-| 재처리한 데이터                                      : ./data2/<steaamer id>/<stream id>.csv
 | 전처리, 토큰화한 데이터                              : ./preprocessed/<streamer id>/csv/<stream id>.csv
 | 텍스트 파일로 변환한 데이터                          : ./preprocessed/<streamer id>/txt/<stream id>.txt
 | 모든 스트림을 하나의 텍스트 파일로 취합한 데이터      : ./preprocessed/<streamer id>/merged_<streamer id>.txt
 * -- * -- * -- * -- * -- * -- * -- * -- * -- * -- * -- * -- * -- * -- * -- * -- * -- * -- * -- * -- * -- * --
 '''
 
-import os
-import pathlib
+from utils import *
 from koreanCHARs import *
 import re
-from functools import partial
 import pandas as pd
+from hanspell import spell_checker
 import logging
-logger = logging.getLogger()
+from multiprocessing import Pool
+logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.INFO)
 
 HEADERS = ['real time', 'uptime', 'nickname', 'chat']
 
-CWD = os.getcwd()
-ORIGIN_FILE_PATH = partial(pathlib.Path, CWD, 'data')
-FILE_PATH = partial(pathlib.Path, CWD)
-PREPROCESSED ='preprocessed'
-
 NUM_ENG_KOR_Q = '[^0-9a-zA-Zㄱ-ㅎㅏ-ㅣ가-힣?]'
-
+KOR = '[^ㄱ-ㅎㅏ-ㅣ가-힣]'
 MERGED = "MERGED_{}.txt"
-
-UTF_8 = 'utf-8'
-
-def getStreamers():
-    for streamer in os.listdir(ORIGIN_FILE_PATH()):
-        if os.path.isdir(ORIGIN_FILE_PATH(streamer)):
-            yield streamer
-
-def getFilesFrom(*paths, extension : str):
-    dir_name = FILE_PATH(*paths)
-    
-    for filename in os.listdir(dir_name):
-        if filename.endswith(extension):
-            yield dir_name, filename
+FORCE_REMAKE = True
 
 def stringify_comma(filePath : os.PathLike, saveAt : os.PathLike, as_name : str = None):
     '''
@@ -118,7 +99,7 @@ def stringify_comma(filePath : os.PathLike, saveAt : os.PathLike, as_name : str 
     마지막 'chat' column의 경우 채팅 문자열 데이터 자체에 콤마(',')가 있어 csv 파일을 읽는데 문제가 있으므로
     채팅 문자열에 해당하는 부분은 큰 따옴표(" ... ")를 이용해서 감싼다.
 
-    이렇게 처리한 CSV 파일은 폴더 data2 에 똑같은 구조로 만든다.
+    이렇게 처리한 CSV 파일은 폴더 preprocessed/<streamer id>/csv 에 똑같은 구조로 만든다.
     '''
 
     if not os.path.isdir(saveAt):
@@ -127,9 +108,13 @@ def stringify_comma(filePath : os.PathLike, saveAt : os.PathLike, as_name : str 
     if not os.path.isfile(filePath) or not os.path.exists(filePath):
         raise FileNotFoundError(filePath)
 
+    if already_exists(pathlib.Path(saveAt, f'{as_name}.csv')):
+        logging.info(f"passing file since already exists : {f'{as_name}.csv'}")
+        return
+
     saves = []
 
-    # logger.info(f"{filePath=}")
+    # logging.info(f"{filePath=}")
     with open(filePath, mode='r', encoding=UTF_8) as fpp:
         for line in fpp:
             target = line.strip().split(',', maxsplit=3)
@@ -203,7 +188,13 @@ def is_system_chat(sender : str, chat : str) -> bool :
     def chat_bot(sender, chat):
         return False
     
-    return any([subscription(None, chat), twip(None, chat),chat_bot(None, chat), isBOT(sender), isSPAMMER(sender)])
+    return any([
+        subscription(None, chat), 
+        twip(None, chat),
+        chat_bot(None, chat), 
+        isBOT(sender), 
+        isSPAMMER(sender)
+    ])
 
 def remove_space_and_special(string : str) -> str:
     '''
@@ -266,14 +257,14 @@ def compress_repetitive_word(string : str, n : int = 2) -> str:
         prev = string[0:step]  # 앞에서부터 step만큼의 문자열 추출
         count = 1
     
-    # 단위(step) 크기만큼 증가시키며 이전 문자열과 비교
+        # 단위(step) 크기만큼 증가시키며 이전 문자열과 비교
         for j in range(step, len(string), step):
         
-        # 이전 상태와 동일하다면 압축 횟수(count) 증가
+            # 이전 상태와 동일하다면 압축 횟수(count) 증가
             if prev == string[j:j + step]:
                 count += 1
             
-        # 다른 문자열이 나왔다면
+            # 다른 문자열이 나왔다면
             else:
                 # compressed += str(count) + prev if count >= 2 else prev
                 if count >= 2:
@@ -303,17 +294,17 @@ def compress_repetitive_word(string : str, n : int = 2) -> str:
     if line:
         line = line[0] 
         if line[1] < answer:
-            # logger.info(f"{line[0]} vs {s}")
+            # logging.info(f"{line[0]} vs {s}")
             return line[0]
     return string
 
 def time_str_to_sec(string_time):
     hour, minute, seconds = list(map(lambda x : int(x), string_time.split(':')))
-    # logger.info(hour, minute, seconds)
+    # logging.info(hour, minute, seconds)
     seconds = hour *60 *60 + minute*60 + seconds
     return seconds
 
-def preprocess(streamer : str):
+def preprocess(streamer : str, pool : Pool):
     '''
     stringify_comma
     is_system_chat
@@ -323,25 +314,26 @@ def preprocess(streamer : str):
 
     함수를 이용해서 csv 파일에 저장할 수 있도록 처리함
     '''
-    from konlpy.tag import Okt
-    okt = Okt()
-
-    logger.info(f'starting streamer data : {streamer}')
-
-    SAVE_FOLDER = "preprocessed"
     
     CSVFILEs = [x for x in getFilesFrom('data', streamer, extension='csv')]
-    
-    for i, (path_, csvname) in enumerate(getFilesFrom('data', streamer, extension='csv'), start=1):
-        logger.info(f'[{streamer}] Working on {i}/{len(CSVFILEs)} ({i/len(CSVFILEs)*100:.2f}%)')
+    SAVE_FOLDER = "preprocessed"
 
-        # logger.info(f'stringify_comma ... ')
+    def workTodo(i, path_, csvname):
+        logging.info(f'[{streamer}] Working on {i}/{len(CSVFILEs)} ({i/len(CSVFILEs)*100:.2f}%) : file name : {csvname}')
+
+        # logging.info(f'stringify_comma ... ')
         f = FILE_PATH(SAVE_FOLDER, streamer,'csv')
+
+        if already_exists(FILE_PATH(PREPROCESSED, streamer,'csv', csvname)) and not FORCE_REMAKE:
+            logging.info(f"passing csv file that already exists :: {csvname}")
+            return
+
         stringify_comma(ORIGIN_FILE_PATH(streamer, csvname), f)
 
         df = None
         ff = FILE_PATH(SAVE_FOLDER, streamer,'csv', csvname)
-        with open(ff, mode='r', encoding='utf-8') as fp:
+
+        with open(ff, mode='r', encoding=UTF_8) as fp:
             df = pd.read_csv(fp)
 
         def apply_df(row, repeatlimit : int = 2) -> str:
@@ -352,41 +344,64 @@ def preprocess(streamer : str):
             string = compress_repetitive_word(string, repeatlimit)
             return f'"{string}"'
 
-        # logger.info(f'adding upsecond column for time series', end=' ')
+        def apply_hanspell(row, ) -> str:
+            '''
+            반복되는 문자나 단어는 문법과 상관없이 줄여야하는 것이므로 
+            원본인 'chat'이 아닌 중복을 처리한 PREPROCESSED 열을 참조한다
+            '''
+            if not any(re.sub(KOR, ' ', row[PREPROCESSED]).replace(' ', '')):
+                return row['chat']
+            try:
+                a = spell_checker.check(row[PREPROCESSED]).checked
+            except:
+                print(f'시발  : {row["chat"]}')
+            else:
+                return a
+
+        logging.info(f'adding upsecond column for time series')
         df['upsecond'] = df.apply(lambda row : time_str_to_sec(row['uptime']), axis=1)
 
-        # logger.info(f'Compressing...', end=' ')
+        logging.info(f'Compressing...')
         df[PREPROCESSED] = df.apply(lambda row : apply_df(row), axis=1)
 
-        # logger.info(f'Drop empty string ... ', end=' ')
+        # logging.info(f'Applying Hanspell...')
+        # df[HANSPELL] = df.apply(lambda row : apply_hanspell(row), axis=1)
+
+        logging.info(f'Drop empty string ... ')
         df = df.drop(df[df.preprocessed == ''].index)
 
-        # logger.info(f'Tokenizing...')
-
-        # df['morphs_noun'] = df[PREPROCESSED].apply(lambda value: okt.nouns(value.strip('""')))
-
-        # real time,uptime,nickname,chat,second,origin_morphs,compressed_morphs
-
+        logging.info(f'Saving at {ff}')
+        # df = df[['real time','uptime', 'upsecond','nickname', 'chat', PREPROCESSED, HANSPELL]]
         df = df[['real time','uptime', 'upsecond','nickname', 'chat', PREPROCESSED]]
         with open(ff, mode='w', newline='', encoding='utf-8') as fp:
             df.to_csv(fp, index=False)
 
         # if not os.path.exists(SAVE_AT(streamer, ORIGIN)) or not os.path.isdir(SAVE_AT(streamer, ORIGIN)):
         #     os.makedirs(SAVE_AT(streamer, ORIGIN))
-    
+
+    # for i, (path_, csvname) in enumerate(getFilesFrom('data', streamer, extension='csv'), start=1):
+    #     workTodo(i, path_, csvname)
+
+    a = [(i, path_, csvname) for i, (path_, csvname) in enumerate(getFilesFrom('data', streamer, extension='csv'), start=1)]
+
+    pool.starmap(workTodo, a)
+
 def to_txt(streamer):
     # txt 파일만 지원하는 다른 것들을 위해서 txt 파일로 만들기
     if not os.path.isdir(FILE_PATH(PREPROCESSED, streamer, 'txt')):
         os.mkdir(FILE_PATH(PREPROCESSED, streamer, 'txt'))
 
     for dir_path, csvfile in getFilesFrom(PREPROCESSED, streamer, 'csv', extension='csv'):
-        f_path = pathlib.Path(dir_path, csvfile)
         
-        df = pd.read_csv(f_path)
-
-        chats = [chat.strip('""')+'\n' for chat in df[PREPROCESSED].to_list()]
-
+        f_path = pathlib.Path(dir_path, csvfile)
         filename = csvfile.split('.')[0]
+
+        if already_exists(FILE_PATH(PREPROCESSED, streamer,'txt', f'{filename}.txt')) and not FORCE_REMAKE:
+            logging.info(f"passing csv file that already exists :: {filename}.txt")
+            continue
+
+        df = pd.read_csv(f_path)
+        chats = [chat.strip('""')+'\n' for chat in df[PREPROCESSED].to_list()]
 
         with open(FILE_PATH(PREPROCESSED, streamer, 'txt', f'{filename}.txt'), mode='w', encoding='utf-8') as fp:
             fp.writelines(chats)
@@ -398,10 +413,10 @@ def txt_all_in_one(streamer):
 
     # merging all text files to single txt file
     merged_txt_path = FILE_PATH(PREPROCESSED, streamer, f'merged_{streamer}.txt')
-    logger.info(f'Merging text files in one text file ... to {merged_txt_path}')
+    logging.info(f'Merging text files in one text file ... to {merged_txt_path}')
 
     chats = []
-    # logger.info(list(getFilesFrom(PREPROCESSED, streamer, 'txt', extension='txt')))
+    # logging.info(list(getFilesFrom(PREPROCESSED, streamer, 'txt', extension='txt')))
 
     for dir_path, txtfile in getFilesFrom(PREPROCESSED, streamer, 'txt', extension='txt'):
         with open(FILE_PATH(dir_path , txtfile), mode='r', encoding='utf-8') as fp:
@@ -415,10 +430,12 @@ if __name__ == '__main__':
     from multiprocessing import Pool
 
     sts = [x for x in getStreamers()]
-    
-    # pool = Pool(len(sts))
+
+    pool = Pool(4)
     # pool.map(preprocess, sts)
 
     for streamer in sts:
+        logging.info(f'starting streamer data : {streamer}')
+        preprocess(streamer)
         to_txt(streamer)
         txt_all_in_one(streamer)
