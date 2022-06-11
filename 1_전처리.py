@@ -82,9 +82,7 @@ from koreanCHARs import *
 import re
 import pandas as pd
 from hanspell import spell_checker
-import logging
 from multiprocessing import Pool
-logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.INFO)
 
 HEADERS = ['real time', 'uptime', 'nickname', 'chat']
 
