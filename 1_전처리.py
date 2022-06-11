@@ -337,6 +337,7 @@ def preprocess(streamer : str, pool : Pool):
         def apply_df(row, repeatlimit : int = 2) -> str:
             if is_system_chat(row['nickname'], row['chat']) == True:
                 return ''
+            string = string.lower()
             string = remove_space_and_special(row['chat'])
             string = compress_repetitive_char(string, repeatlimit)
             string = compress_repetitive_word(string, repeatlimit)
