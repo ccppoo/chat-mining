@@ -16,22 +16,19 @@ OOV(Out of Vocabulary) 문제를 해결하기 위해서 Word2Vec 또는 ELMo를 
 '''
 
 import sentencepiece as spm
-from functools import partial
-from pathlib import Path
-import os
+from utils import *
 
-import logging
-logger = logging.getLogger()
-# logging.disable(logging.INFO)
+logging.basicConfig(format='%(levelname)s:%(message)s', level=logging.INFO)
 
-
-FILE_PATH = partial(Path, os.getcwd())
 DATA_FOLDER_NAME = 'preprocessed'
-
 DATA_FOLDER = FILE_PATH(DATA_FOLDER_NAME)
 MERGED_TXT_name = "merged_{streamer}.txt"
+FORCE_REMAKE = True
 
 def getStreamers():
+    '''
+    파일 경로가 다름으로 재정의 했음 지우지 말것
+    '''
     for streamer in os.listdir(FILE_PATH(DATA_FOLDER_NAME)):
         if os.path.isdir(FILE_PATH(DATA_FOLDER_NAME, streamer)):
             yield streamer
@@ -40,7 +37,7 @@ def moveFileTo(this : os.PathLike, to : os.PathLike):
     if not os.path.exists(this):
         raise FileNotFoundError(this)
     os.rename(this, to)
-    logger.info(f"Moved model and vocab file to {to}")
+    logging.info(f"Moved model and vocab file to {to}")
 
 '''
 input : 학습시킬 파일
@@ -56,18 +53,26 @@ eos_id, eos_piece: end of sequence token id, 값
 user_defined_symbols: 사용자 정의 토큰
 '''
 
-
-
 def trainSentencePiece(streamer, model : str, vocabSize : int):
-    logger.info(f"start training : {streamer}, {model}, {vocabSize}")
+    COVERAGE = 0.98
+
+    model_name = f"sp_{streamer}_{model}_{vocabSize}_{COVERAGE}"
+
+    if already_exists(
+        FILE_PATH(DATA_FOLDER_NAME, streamer, model,f"{model_name}.model"),
+        FILE_PATH(DATA_FOLDER_NAME, streamer, model,f"{model_name}.vocab")
+    ) and not FORCE_REMAKE:
+        logging.info(f"already exists : {streamer}, {model}, {vocabSize}")
+        return
+
+    logging.info(f"start training : {streamer}, {model}, {vocabSize}")
 
     inputfile = FILE_PATH(DATA_FOLDER_NAME, streamer, MERGED_TXT_name.format(streamer=streamer))
 
-    COVERAGE = 0.98
-    model_name = f"sp_{streamer}_{model}_{vocabSize}_{COVERAGE}"
     # --normalization_rule_name=identity
     # --num_threads=몇 개?
-    formatInput = f'--input={inputfile} --model_prefix={model_name} --shuffle_input_sentence=True --character_coverage={COVERAGE} --vocab_size={vocabSize} --model_type={model} --max_sentence_length=9999 --minloglevel=2'
+    formatInput = f'--input={inputfile} --model_prefix={model_name} --shuffle_input_sentence=True \
+        --character_coverage={COVERAGE} --vocab_size={vocabSize} --model_type={model} --max_sentence_length=9999 --minloglevel=2'
 
     spm.SentencePieceTrainer.Train(formatInput)
 
@@ -85,7 +90,6 @@ def trainSentencePiece(streamer, model : str, vocabSize : int):
     moveFileTo(FILE_PATH(modelFile), FILE_PATH(DATA_FOLDER_NAME, streamer,model,modelFile))
     moveFileTo(FILE_PATH(vocabFile), FILE_PATH(DATA_FOLDER_NAME, streamer,model,vocabFile))
 
-
     return model_name
 
 def encodeByWordpiece(streamer, modelName : str ,smp):
@@ -95,7 +99,7 @@ def encodeByWordpiece(streamer, modelName : str ,smp):
     modelPath = str(FILE_PATH(DATA_FOLDER_NAME, streamer, modelName))
 
     sp = spm.SentencePieceProcessor()
-    # logger.info(modelPath)
+    # logging.info(modelPath)
     sp.load(str(modelPath))
 
     t1 = sp.EncodeAsPieces(smp)
@@ -103,36 +107,43 @@ def encodeByWordpiece(streamer, modelName : str ,smp):
     
 if __name__ == '__main__':
 
-    models = ['unigram','bpe','char','word']
-    vocabSizes = [1000, 2000, 3000, 4000]
-    sts = [x for x in getStreamers()]
+    First = True
+    Second = True
 
-    jobs_todo = len(models) * len(vocabSizes)
+    if First:
+        models = ['unigram','bpe','char','word']
+        vocabSizes = [1000, 2000, 4000]
+        sts = [x for x in getStreamers()]
 
-    from multiprocessing import Pool
-    from itertools import product
-    from os import cpu_count
+        jobs_todo = len(models) * len(vocabSizes)
+
+        from multiprocessing import Pool
+        from itertools import product
+        from os import cpu_count
+        
+        streamers_, models_, vocabSizes_ = zip(*list(product(sts, models, vocabSizes)))
+        # logging.info(combinations)
+
+        # 프로세스라서 CPU 개수(하이퍼스레딩 - 가상코어 포함을 의미)는 상관 없지만,  I/O가 많은 작업이고,
+        # csv 파일이 클 경우에 시스템 전체에 블로킹을 일으킬 수 있으므로 전체 CPU 중 75%만 할당한다
+        # 또한 sentencepeice는 모델을 변형하지 않고, 단순히 메모리에 적재 후 사용한다는 점.
+        # 그리고 기존 파일을 읽기만 하고, 새로운 파일을 쓰는 것이기 때문에 상관 없다 (Lock 필요 X)
+
+        # 나는 분명히 프로세서 16개 중 75%인 12개만 줬는데 한 순간에 28개의 프로세스가 돌아감
+        # 뭐지?
+        # pool = Pool(int(cpu_count() * 0.75))
+        pool = Pool(4)
+        pool.starmap(trainSentencePiece, product(sts, models, vocabSizes))
+
+        # cnt = 0
+        # for streamer in getStreamers():
+        #     for model in models:
+        #         logging.info(f'Working on {streamer.rjust(15)}, model : [{model}]')
+        #         for vocabSize in vocabSizes:
+        #             works = f'{str(cnt).rjust(2)}/{len(jobs_todo)}'.rjust(10)
+        #             logging.info(f"streamer {streamer.rjust(15)} | {cnt}/{jobs_todo} ({works} %)")
+        #             model_name = trainSentencePiece(streamer,model, vocabSize)
+        #             cnt += 1
     
-    streamers_, models_, vocabSizes_ = zip(*list(product(sts, models, vocabSizes)))
-    # logger.info(combinations)
-
-    # 프로세스라서 CPU 개수(하이퍼스레딩 - 가상코어 포함을 의미)는 상관 없지만,  I/O가 많은 작업이고,
-    # csv 파일이 클 경우에 시스템 전체에 블로킹을 일으킬 수 있으므로 전체 CPU 중 75%만 할당한다
-    # 또한 sentencepeice는 모델을 변형하지 않고, 단순히 메모리에 적재 후 사용한다는 점.
-    # 그리고 기존 파일을 읽기만 하고, 새로운 파일을 쓰는 것이기 때문에 상관 없다 (Lock 필요 X)
-
-    # 나는 분명히 프로세서 16개 중 75%인 12개만 줬는데 한 순간에 28개의 프로세스가 돌아감
-    # 뭐지?
-    pool = Pool(int(cpu_count() * 0.75))
-    pool.starmap(trainSentencePiece, product(sts, models, vocabSizes))
-
-    # cnt = 0
-    # for streamer in getStreamers():
-    #     for model in models:
-    #         logger.info(f'Working on {streamer.rjust(15)}, model : [{model}]')
-    #         for vocabSize in vocabSizes:
-    #             works = f'{str(cnt).rjust(2)}/{len(jobs_todo)}'.rjust(10)
-    #             logger.info(f"streamer {streamer.rjust(15)} | {cnt}/{jobs_todo} ({works} %)")
-    #             model_name = trainSentencePiece(streamer,model, vocabSize)
-    #             cnt += 1
-                
+    if Second:
+        pass
